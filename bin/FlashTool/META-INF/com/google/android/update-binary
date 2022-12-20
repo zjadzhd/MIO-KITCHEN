@@ -1,0 +1,119 @@
+#!/sbin/sh
+OUTFD=/proc/self/fd/$2
+ZIPFILE="$3"
+ui_print() {
+  echo -e "ui_print $1\nui_print" >>$OUTFD
+}
+package_extract_file() {
+  ui_print "- 正在刷写分区 $(echo $2 | cut -d '/' -f 6) "
+  unzip -p "$ZIPFILE" $1 >$2
+}
+package_extract_zstd() {
+  ui_print "- 正在刷写分区 $(echo $2 | cut -d '/' -f 6) "
+  unzip -p "$ZIPFILE" $1 | /tmp/bin/zstd -c -d >$2
+}
+getVolumeKey() {
+	ui_print "- 监听音量键 按[+]是Y 按[-]是N"
+	keyInfo=$(getevent -qlc 1)
+	Up=$(echo $keyInfo |grep KEY_VOLUMEUP)
+	Down=$(echo $keyInfo |grep KEY_VOLUMEDOWN)
+	[ "$Up" != "" ] && return 0
+	[ "$Down" != "" ] && return 1
+}
+[ -d /tmp ] && rm -rf /tmp
+mkdir -p /tmp
+unzip "$ZIPFILE" bin/zstd -d /tmp
+unzip "$ZIPFILE" META-INF/ota -d /tmp
+chmod -R 0755 /tmp
+ui_print "MIO-MIUI-MOD "
+# 禁用模块
+ui_print "- 是否禁用模块？"
+if getVolumeKey;then
+	ui_print "- 禁用模块"
+	for module in $(ls -d /data/adb/modules/*); do
+		moduleName=$(basename $module)
+		ui_print "- 正在禁用 $moduleName"
+		touch $module/disable
+	done
+fi
+ui_print "- 开始刷机"
+#oi
+# unzip boot
+unzip -o $ZIPFILE "images/boot*.img" -d /tmp >/dev/null 2>&1
+unzip -o $ZIPFILE "META-INF/ota" -d /tmp >/dev/null 2>&1
+unzip -o $ZIPFILE "images/recovery*.img" -d /tmp >/dev/null 2>&1
+unzip -o $ZIPFILE "images/vbmeta*.img" -d /tmp >/dev/null 2>&1
+parttype=`cat /tmp/META-INF/ota`
+if [ -f tmp/images/boot.img ];then
+    if [ "$parttype" == "AB" ];then
+	package_extract_file "images/boot.img" "/dev/block/bootdevice/by-name/boot_a"
+	package_extract_file "images/boot.img" "/dev/block/bootdevice/by-name/boot_b"
+	fi
+	if [ "$parttype" == "A" ];then
+	package_extract_file "images/boot.img" "/dev/block/bootdevice/by-name/boot"
+	fi
+fi
+if [ -f tmp/images/boot_Magisk.img ];then
+	ui_print "- 是否需要 root？"
+	if getVolumeKey ;then
+		ui_print "- 正在刷入 root"
+		if [ "$parttype" == "AB" ];then
+		package_extract_file "images/boot_Magisk.img" "/dev/block/bootdevice/by-name/boot_a"
+		package_extract_file "images/boot_Magisk.img" "/dev/block/bootdevice/by-name/boot_b"
+		fi
+		if [ "$parttype" == "A" ];then
+		package_extract_file "images/boot_Magisk.img" "/dev/block/bootdevice/by-name/boot"
+		fi
+	fi
+fi
+if [ -f tmp/images/boot_twrp.img ];then
+	ui_print "- 是否需要 TWRP？"
+	if getVolumeKey ;then
+		ui_print "- 正在刷入 TWRP"
+		if [ "$parttype" == "AB" ];then
+		package_extract_file "images/boot_twrp.img" "/dev/block/bootdevice/by-name/boot_a"
+		package_extract_file "images/boot_twrp.img" "/dev/block/bootdevice/by-name/boot_b"
+		fi
+		if [ "$parttype" == "A" ];then
+		package_extract_file "images/boot_twrp.img" "/dev/block/bootdevice/by-name/boot"
+		fi
+	fi
+fi
+if [ -f tmp/images/recovery_twrp.img ];then
+	ui_print "- 是否需要 TWRP？"
+	if getVolumeKey ;then
+		ui_print "- 正在刷入 TWRP"
+		if [ "$parttype" == "AB" ];then
+		package_extract_file "images/recovery.img" "/dev/block/bootdevice/by-name/recovery_a"
+		package_extract_file "images/recovery.img" "/dev/block/bootdevice/by-name/recovery_b"
+		fi
+		if [ "$parttype" == "A" ];then
+		package_extract_file "images/recovery" "/dev/block/bootdevice/by-name/recovery"
+		fi
+	fi
+fi
+# unzip preloader
+unzip -o $ZIPFILE "images/preloader*.img" -d /tmp >/dev/null 2>&1
+# UFS
+if [ -e /dev/block/sda ] && [ -f tmp/images/preloader_ufs.img ] ;then
+	unzip -p $ZIPFILE images/preloader_ufs.img | /tmp/bin/android/zstd -c -d >/dev/block/by-name/sda
+fi
+#EMMC
+if [ -e /dev/block/mmcblk0boot0 ] && [ -f tmp/images/preloader_emmc.img ] ;then
+	unzip -p $ZIPFILE images/preloader_emmc.img | /tmp/bin/android/zstd -c -d >/dev/block/by-name/mmcblk0boot0
+fi
+if [ -e /dev/block/mmcblk0boot1 ] && [ -f tmp/images/preloader_emmc.img ] ;then
+	unzip -p $ZIPFILE images/preloader_emmc.img | /tmp/bin/android/zstd -c -d >/dev/block/by-name/mmcblk0boot1
+fi
+if [ -f tmp/images/preloader_raw.img ] ;then
+	for preloaderPartition in $(ls /dev/block/by-name |grep preloader);do
+		unzip -p $ZIPFILE images/preloader_raw.img | /tmp/bin/android/zstd -c -d >/dev/block/by-name/"$preloaderPartition"
+	done
+fi
+#super image
+package_extract_zstd "images/super.img.zst" "/dev/block/bootdevice/by-name/super"
+ui_print "- 清除缓存"
+rm -rf /data/dalvik-cache/arm/*
+rm -rf /data/dalvik-cache/arm64/*
+ui_print "- 刷机完毕"
+exit 0
